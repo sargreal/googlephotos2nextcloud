@@ -43,7 +43,8 @@ define('NEXTCLOUD_UPLOAD_PATH', $parsed_url['path']);
 $client = new Sabre\DAV\Client([
     'baseUri' => NEXTCLOUD_URL . '/remote.php/dav',
     'userName' => NEXTCLOUD_USER,
-    'password' => NEXTCLOUD_PASSWORD
+    'password' => NEXTCLOUD_PASSWORD,
+    'authType' => 1,
         ]);
 
 
