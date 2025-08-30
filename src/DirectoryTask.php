@@ -125,6 +125,8 @@ readonly class DirectoryTask {
 
                 $photo_remote_path = $directory_remote_path . '/' . $photo_remote_filename;
 
+                $debug('Uploading photo to "' . str_replace($this->files_base_path, '', $photo_remote_path) . '"');
+
                 RemoteFile::upload($attempt, $photo_path, $photo_remote_path);
                 $debug('Succesfully uploaded to "' . str_replace($this->files_base_path, '', $photo_remote_path) . '"');
 

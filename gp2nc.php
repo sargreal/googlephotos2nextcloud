@@ -47,9 +47,10 @@ $client = new Sabre\DAV\Client([
     'authType' => 1,
         ]);
 
-
+IO::write('Looking for metadata files in: ' . WORKING_DIRECTORY . "/*/metadata.json");
 $user_albums = [];
-$user_albums_metadata_files = glob(WORKING_DIRECTORY . "/*/metadata.json");
+$user_albums_metadata_files = glob(WORKING_DIRECTORY . "/*/Metadaten.json");
+IO::write('Found metadata files: ' . json_encode($user_albums_metadata_files));
 foreach ($user_albums_metadata_files as $user_albums_metadata_file) {
     $user_album_name = basename(dirname($user_albums_metadata_file));
     $user_album_metadata = IO::readJson($user_albums_metadata_file);
@@ -80,7 +81,7 @@ IO::write('Found ' . count($available_albums) . ' available albums');
 $createable_albums = array_diff($user_albums, $available_albums);
 IO::write('Creating ' . count($createable_albums) . ' albums');
 foreach ($createable_albums as $creatable_album) {
-    IO::write('--> ' . rawurlencode($creatable_album));
+    IO::write('--> "' . $creatable_album . '"');
     $client->request('MKCOL', $albums_base_path . '/' . rawurlencode($creatable_album));
 }
 
@@ -125,5 +126,10 @@ foreach (glob(WORKING_DIRECTORY . '/*') as $path) {
         continue;
     }
 
-    $task($path);
+    IO::write('---');
+    IO::write('Processing directory: ' . $path);
+
+    $result = $task($path);
+
+    IO::write('Result: ' . json_encode($result));
 }
