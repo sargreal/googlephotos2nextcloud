@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   build:
@@ -81,9 +82,10 @@ jobs:
           files: |
             LICENSE
             CHANGELOG.md
-            ./build/linux/*
-            ./build/mac/*
-            ./build/windows/*
+            ./build/linux/linux-*
+            ./build/mac/mac-*
+            ./build/windows/windows-*
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           token: ${{ secrets.GITHUB_TOKEN }}
         
