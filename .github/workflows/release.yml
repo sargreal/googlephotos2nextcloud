@@ -5,10 +5,17 @@ name: Publish platform releases
 # separate terms of service, privacy policy, and support
 # documentation.
 
+# based on https://oneuptime.com/blog/post/2026-01-25-automate-releases-github-actions/view
+
 on:
   push:
-    tags: [ 'v*.*.*' ]
+    tags: [ '*.*.*' ]
 
+
+permissions:
+  contents: write  # Required to create releases
+  packages: write  # Required if publishing to GitHub Packages
+  
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
@@ -37,6 +44,8 @@ jobs:
           
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history needed for changelog
         
       - name: Prepare project
         run: |
@@ -62,12 +71,27 @@ jobs:
       - name: build releases from phar file
         run: phpacker build all --src=./build/gp2nc.phar
         
-      - uses: "marvinpinto/action-automatic-releases@latest"
+      - name: Generate changelog
+        id: changelog
+        uses: conventional-changelog/conventional-changelog-action@v4
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          output-file: false  # Don't write to file, use output
+          skip-version-file: true
+          skip-commit: true
+        
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # Pre-release if tag has hyphen
           files: |
             LICENSE
             ./build/linux/*
             ./build/mac/*
             ./build/windows/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
