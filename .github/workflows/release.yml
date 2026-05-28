@@ -73,7 +73,7 @@ jobs:
         
       - name: Generate changelog
         id: changelog
-        uses: conventional-changelog/conventional-changelog-action@v4
+        uses: TriPSs/conventional-changelog-action@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           output-file: false  # Don't write to file, use output
