@@ -37,6 +37,9 @@ jobs:
           tools: composer:v2
           coverage: xdebug
           
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Install phar-composer
         run: |
             curl -o phar-composer-latest.phar -JL https://clue.engineering/phar-composer-latest.phar
