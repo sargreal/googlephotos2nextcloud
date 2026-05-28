@@ -7,14 +7,14 @@ ini_set('memory_limit', '3G'); // needed when there are ALOT of files remote
 use Rikmeijer\Googlephotos2nextcloud\DirectoryTask;
 use Rikmeijer\Googlephotos2nextcloud\IO;
 
-$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
-$dotenv->safeLoad();
-
 define('WORKING_DIRECTORY', getcwd());
 if (WORKING_DIRECTORY === false) {
     exit('Could not determine current working directory');
 }
 IO::write('Working from ' . WORKING_DIRECTORY);
+
+$dotenv = Dotenv\Dotenv::createImmutable(file_exists(WORKING_DIRECTORY.'/.env')?WORKING_DIRECTORY:__DIR__);
+$dotenv->safeLoad();
 
 if (isset($_ENV['NEXTCLOUD_URL']) === false) {
     exit('Nextcloud URL missing, please set in .env or as environment variable');

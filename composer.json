@@ -2,6 +2,7 @@
     "name": "rikmeijer/googlephotos2nextcloud",
     "description": "Tool to import Google Photos Takeout into Nextcloud",
     "type": "project",
+    "bin" : ["gp2nc.php"],
     "require": {
         "php": "^8.4",
         "ext-imagick": "*",

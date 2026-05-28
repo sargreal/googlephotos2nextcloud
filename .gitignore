@@ -4,3 +4,4 @@ composer.phar
 /vendor/
 /Google Foto_s
 .DS_Store
+build

@@ -6,14 +6,10 @@ name: Docker
 # documentation.
 
 on:
-  schedule:
-    - cron: '44 21 * * *'
   push:
     branches: [ "main" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
-  pull_request:
-    branches: [ "main" ]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -53,3 +49,19 @@ jobs:
             composer global require phpacker/phpacker
             export PATH=~/.config/.composer/vendor/bin:$PATH
             phpacker --version
+            
+      - name: Build phar file
+        run: phar-composer build . ./build/gp2nc.phar
+        
+      - name: build releases from phar file
+        run: phpacker build all --src=./build/gp2nc.phar
+        
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: false
+          files: |
+            LICENSE
+            ./build/linux/*
+            ./build/mac/*
+            ./build/windows/*
