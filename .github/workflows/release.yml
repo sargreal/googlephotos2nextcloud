@@ -85,5 +85,5 @@ jobs:
             ./build/mac/*
             ./build/windows/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
         
