@@ -43,9 +43,9 @@ jobs:
           
       - name: Install phar-composer
         run: |
-            curl -JOL https://clue.engineering/phar-composer-latest.phar
+            curl -o phar-composer-latest.phar -JL https://clue.engineering/phar-composer-latest.phar
             chmod 755 phar-composer-latest.phar
-            sudo mv phar-composer.phar /usr/local/bin/phar-composer
+            sudo mv phar-composer-latest.phar /usr/local/bin/phar-composer
             phar-composer --version
           
       - name: Install phpacker
