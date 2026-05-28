@@ -73,7 +73,7 @@ jobs:
         
       - name: Generate changelog with git-cliff
         id: cliff
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --latest --strip header
@@ -84,11 +84,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}  # Pre-release if tag has hyphen
           files: |
             LICENSE
+            CHANGELOG.md
             ./build/linux/*
             ./build/mac/*
             ./build/windows/*
