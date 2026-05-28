@@ -71,14 +71,14 @@ jobs:
       - name: build releases from phar file
         run: phpacker build all --src=./build/gp2nc.phar
         
-      - name: Generate changelog
-        id: changelog
-        uses: TriPSs/conventional-changelog-action@v4
+      - name: Generate changelog with git-cliff
+        id: cliff
+        uses: orhun/git-cliff-action@v3
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          output-file: false  # Don't write to file, use output
-          skip-version-file: true
-          skip-commit: true
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md
         
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
