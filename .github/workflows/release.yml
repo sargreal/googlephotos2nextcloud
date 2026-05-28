@@ -13,8 +13,7 @@ on:
 
 
 permissions:
-  contents: write  # Required to create releases
-  packages: write  # Required if publishing to GitHub Packages
+  contents: write
   
 env:
   # Use docker.io for Docker Hub if empty
@@ -81,7 +80,7 @@ jobs:
           OUTPUT: CHANGELOG.md
         
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           draft: false
