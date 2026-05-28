@@ -11,11 +11,6 @@ on:
   push:
     tags: [ '*.*.*' ]
 
-
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   build:
 
@@ -86,6 +81,6 @@ jobs:
             ./build/mac/mac-*
             ./build/windows/windows-*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_RELEASE_TOKEN }}
+          token: ${{ secrets.PAT_RELEASE_TOKEN }}
         
