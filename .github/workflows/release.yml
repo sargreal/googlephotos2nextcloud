@@ -41,7 +41,9 @@ jobs:
         uses: actions/checkout@v6
         
       - name: Prepare project
-        run: composer install
+        run: |
+            composer install
+            mkdir build
         
       - name: Install phar-composer
         run: |
