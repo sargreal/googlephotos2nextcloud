@@ -81,6 +81,5 @@ jobs:
             ./build/mac/mac-*
             ./build/windows/windows-*
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_RELEASE_TOKEN }}
           token: ${{ secrets.PAT_RELEASE_TOKEN }}
         
