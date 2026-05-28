@@ -77,8 +77,8 @@ jobs:
           files: |
             LICENSE
             CHANGELOG.md
-            ./build/linux/linux-*
-            ./build/mac/mac-*
-            ./build/windows/windows-*
+            build/build/windows/windows-*
+            build/build/linux/linux-*
+            build/build/mac/mac-*
           token: ${{ secrets.PAT_RELEASE_TOKEN }}
         
