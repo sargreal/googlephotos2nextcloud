@@ -80,6 +80,5 @@ jobs:
             ./build/linux/linux-*
             ./build/mac/mac-*
             ./build/windows/windows-*
-        env:
           token: ${{ secrets.PAT_RELEASE_TOKEN }}
         
