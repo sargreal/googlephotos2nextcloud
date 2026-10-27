@@ -7,14 +7,14 @@ ini_set('memory_limit', '3G'); // needed when there are ALOT of files remote
 use Rikmeijer\Googlephotos2nextcloud\DirectoryTask;
 use Rikmeijer\Googlephotos2nextcloud\IO;
 
-$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
-$dotenv->safeLoad();
-
 define('WORKING_DIRECTORY', getcwd());
 if (WORKING_DIRECTORY === false) {
     exit('Could not determine current working directory');
 }
 IO::write('Working from ' . WORKING_DIRECTORY);
+
+$dotenv = Dotenv\Dotenv::createImmutable(file_exists(WORKING_DIRECTORY.'/.env')?WORKING_DIRECTORY:__DIR__);
+$dotenv->safeLoad();
 
 if (isset($_ENV['NEXTCLOUD_URL']) === false) {
     exit('Nextcloud URL missing, please set in .env or as environment variable');
@@ -23,10 +23,17 @@ $parsed_url = parse_url($_ENV['NEXTCLOUD_URL']);
 
 $origin = [$parsed_url['scheme'] . '://', $parsed_url['host']];
 if (isset($parsed_url['port'])) {
-    $origin[] = $parsed_url['port'];
+    $origin[] = ':' . $parsed_url['port'];
 }
-define('NEXTCLOUD_URL', implode($origin));
+define('NEXTCLOUD_URL', implode($origin) . '/');
 IO::write('Working on ' . NEXTCLOUD_URL);
+
+if (isset($_ENV['NEXTCLOUD_PREFIX'])) {
+  define('NEXTCLOUD_PREFIX', $_ENV['NEXTCLOUD_PREFIX'] . '/remote.php/dav');
+  IO::write('Path prefix ' . $_ENV['NEXTCLOUD_PREFIX']);
+} else {
+  define('NEXTCLOUD_PREFIX', 'remote.php/dav');
+}
 
 define('NEXTCLOUD_USER', $_ENV['NEXTCLOUD_USER'] ?? $parsed_url['user'] ?? null);
 IO::write('Identifing as ' . NEXTCLOUD_USER ?? 'anonymous');
@@ -41,15 +48,20 @@ if (NEXTCLOUD_PASSWORD !== null) {
 define('NEXTCLOUD_UPLOAD_PATH', $parsed_url['path']);
 
 $client = new Sabre\DAV\Client([
-    'baseUri' => NEXTCLOUD_URL . '/remote.php/dav',
+    'driver' => 'webdav',
+    'baseUri' => NEXTCLOUD_URL,
     'userName' => NEXTCLOUD_USER,
     'password' => NEXTCLOUD_PASSWORD,
-    'authType' => 1,
+    'pathPrefix' => NEXTCLOUD_PREFIX,
+    'authType' => 1, //Basic authentication
         ]);
 
-IO::write('Looking for metadata files in: ' . WORKING_DIRECTORY . "/*/metadata.json");
+IO::write('Looking for album metadata files in: ' . WORKING_DIRECTORY);
 $user_albums = [];
-$user_albums_metadata_files = glob(WORKING_DIRECTORY . "/*/Metadaten.json");
+$user_albums_metadata_files = array_merge(
+    glob(WORKING_DIRECTORY . "/*/metadata.json") ?: [],
+    glob(WORKING_DIRECTORY . "/*/Metadaten.json") ?: []
+);
 IO::write('Found metadata files: ' . json_encode($user_albums_metadata_files));
 foreach ($user_albums_metadata_files as $user_albums_metadata_file) {
     $user_album_name = basename(dirname($user_albums_metadata_file));
@@ -57,15 +69,15 @@ foreach ($user_albums_metadata_files as $user_albums_metadata_file) {
     if (isset($user_album_metadata['title']) === false) {
         continue;
     } elseif (empty($user_album_metadata['title']) === false) {
-        $user_albums[] = $user_album_metadata['title'];
+        $user_albums[] = str_replace('/', '-', $user_album_metadata['title']);
     } else {
         $user_albums[] = $user_album_name;
     }
 }
 IO::write('Found ' . count($user_albums) . ' user albums');
 
-$files_base_path = '/remote.php/dav/files/' . NEXTCLOUD_USER;
-$albums_base_path = '/remote.php/dav/photos/' . NEXTCLOUD_USER . '/albums';
+$files_base_path = '/' . NEXTCLOUD_PREFIX .'/files/' . NEXTCLOUD_USER;
+$albums_base_path = '/' . NEXTCLOUD_PREFIX .'/photos/' . NEXTCLOUD_USER . '/albums';
 
 IO::write('Retrieving remote albums...');
 $available_album_resources = $client->propfind($albums_base_path, [
@@ -133,3 +145,4 @@ foreach (glob(WORKING_DIRECTORY . '/*') as $path) {
 
     IO::write('Result: ' . json_encode($result));
 }
+IO::write('Done!');

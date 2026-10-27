@@ -1,4 +1,7 @@
+composer.phar
 /nbproject/private/
-/.env
+.env
 /vendor/
 /Google Foto_s
+.DS_Store
+build

@@ -1,0 +1,84 @@
+name: Publish platform releases
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+# based on https://oneuptime.com/blog/post/2026-01-25-automate-releases-github-actions/view
+
+on:
+  push:
+    tags: [ '*.*.*' ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+
+    steps:
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php_version }}
+          tools: composer:v2
+          coverage: xdebug
+          
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history needed for changelog
+        
+      - name: Prepare project
+        run: |
+            composer install
+            mkdir build
+        
+      - name: Install phar-composer
+        run: |
+            curl -o phar-composer-latest.phar -JL https://clue.engineering/phar-composer-latest.phar
+            chmod 755 phar-composer-latest.phar
+            sudo mv phar-composer-latest.phar /usr/local/bin/phar-composer
+            phar-composer --version
+          
+      - name: Install phpacker
+        run: |
+            composer global require phpacker/phpacker
+            export PATH=~/.config/.composer/vendor/bin:$PATH
+            phpacker --version
+            
+      - name: Build phar file
+        run: phar-composer build . ./build/gp2nc.phar
+        
+      - name: build releases from phar file
+        run: phpacker build all --src=./build/gp2nc.phar
+        
+      - name: Generate changelog with git-cliff
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md
+        
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # Pre-release if tag has hyphen
+          files: |
+            LICENSE
+            CHANGELOG.md
+            build/build/windows/windows-*
+            build/build/linux/linux-*
+            build/build/mac/mac-*
+          token: ${{ secrets.PAT_RELEASE_TOKEN }}
+        
