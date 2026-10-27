@@ -71,13 +71,18 @@ to see what would happen; the first log line says `(dry run, nothing will be cha
 
 ```dotenv
 NEXTCLOUD_URL=https://user:s3cr3t@cloud.example.com/Photos
-NEXTCLOUD_TAKEOUT_PATH=/Takeouts # or several paths: /Takeout;/Takeout (1)
-DRY_RUN=true # Optional, only log what would be done
-DELETE_DUPLICATES=false # Optional, keep duplicates in the takeout directory
+# one path, or several separated by ;
+NEXTCLOUD_TAKEOUT_PATH=/Takeouts
+# Optional, only log what would be done
+DRY_RUN=true
+# Optional, keep duplicates in the takeout directory
+DELETE_DUPLICATES=false
 ```
 
 ```sh
-docker run --rm -e NEXTCLOUD_URL=<NEXTCLOUD_URL> -e NEXTCLOUD_TAKEOUT_PATH=/Takeout -e DRY_RUN=true gp2nc
+docker run --rm --env-file gp2nc.env gp2nc
+# or
+docker run --rm -e NEXTCLOUD_URL=<NEXTCLOUD_URL> -e NEXTCLOUD_TAKEOUT_PATH=/Takeouts gp2nc /app/gp2nc.php --dry-run
 ```
 
 ## Known errors

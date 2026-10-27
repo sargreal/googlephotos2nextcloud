@@ -17,6 +17,17 @@ $dotenv = Dotenv\Dotenv::createImmutable(file_exists(WORKING_DIRECTORY.'/.env')?
 $dotenv->safeLoad();
 // $_ENV only contains environment variables when variables_order includes "E", which most php.ini files leave out
 $_ENV = getenv() + $_ENV;
+// docker --env-file passes lines literally, so strip quotes and inline comments like a .env file would
+foreach ($_ENV as $name => $value) {
+    if (is_string($value) && (str_starts_with($name, 'NEXTCLOUD_') || in_array($name, ['DRY_RUN', 'DELETE_DUPLICATES'], true))) {
+        $value = trim($value);
+        if (preg_match('/^(["\'])(.*)\1(\s+#.*)?$/', $value, $matches) === 1) {
+            $_ENV[$name] = $matches[2];
+        } else {
+            $_ENV[$name] = trim(preg_replace('/\s+#.*$/', '', $value));
+        }
+    }
+}
 
 if (isset($_ENV['NEXTCLOUD_URL']) === false) {
     exit('Nextcloud URL missing, please set in .env or as environment variable');
