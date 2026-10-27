@@ -46,7 +46,13 @@ docker run --rm -v "/path/to/Takeout/Google Photos":/photos -e NEXTCLOUD_URL=<NE
 ## Import a takeout that is already extracted in Nextcloud
 
 If you already uploaded and extracted your Takeout into Nextcloud, set `NEXTCLOUD_TAKEOUT_PATH` to its location
-(relative to your Nextcloud files, e.g. `/Takeout`). Instead of uploading, the files are then moved on the server:
+(relative to your Nextcloud files, e.g. `/Takeout`). Instead of uploading, the files are then moved on the server.
+
+A takeout split over several exports does not need to be merged first: put the extracted exports below one folder
+(e.g. `/Takeouts/takeout-001`, `/Takeouts/takeout-002`) or list several paths separated by `;`
+(e.g. `/Takeout;/Takeout (1)`). Folders with the same name in different exports are treated as one, so a photo's
+JSON sidecar or an album's `metadata.json` may be in another export than the photo itself.
+
 
 - every photo/video is moved to `<NEXTCLOUD_URL path>/<year>/<month>/`, using the taken time from its JSON sidecar
   (falling back to the date Nextcloud extracted from EXIF, then the modification time)
@@ -60,7 +66,7 @@ No local files or Imagick are needed for this mode. Run with `DRY_RUN=true` firs
 
 ```dotenv
 NEXTCLOUD_URL=https://user:s3cr3t@cloud.example.com/Photos
-NEXTCLOUD_TAKEOUT_PATH=/Takeout
+NEXTCLOUD_TAKEOUT_PATH=/Takeouts # or several paths: /Takeout;/Takeout (1)
 DRY_RUN=true # Optional, only log what would be done
 DELETE_DUPLICATES=false # Optional, keep duplicates in the takeout directory
 ```

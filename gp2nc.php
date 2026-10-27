@@ -70,7 +70,10 @@ if (isset($_ENV['NEXTCLOUD_TAKEOUT_PATH'])) {
     $task = new Rikmeijer\Googlephotos2nextcloud\RemoteTakeoutTask(
             $client,
             new Rikmeijer\Googlephotos2nextcloud\Attempt($client),
-            rawurldecode($files_base_path) . '/' . trim($_ENV['NEXTCLOUD_TAKEOUT_PATH'], '/'),
+            array_map(
+                    fn(string $path) => rawurldecode($files_base_path) . '/' . trim($path, '/ '),
+                    array_filter(explode(';', $_ENV['NEXTCLOUD_TAKEOUT_PATH']), fn(string $path) => trim($path, '/ ') !== '')
+            ),
             rawurldecode($files_base_path . NEXTCLOUD_UPLOAD_PATH),
             rawurldecode($albums_base_path),
             $dry_run,

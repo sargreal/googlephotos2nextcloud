@@ -9,6 +9,9 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  * the target are deleted (they end up in the Nextcloud trash bin), and files from album directories
  * are added to the corresponding Nextcloud Photos album.
  *
+ * A takeout split over several exports can be imported at once: directories with the same name (e.g. an album
+ * or "Photos from 2020") are treated as one, so sidecars and album metadata are found in any of the exports.
+ *
  * Internally all paths are decoded DAV paths (e.g. /remote.php/dav/files/user/Takeout/Photos from 2020),
  * they are only encoded when sent to the server.
  */
@@ -36,13 +39,13 @@ class RemoteTakeoutTask {
     public function __construct(
             private \Sabre\DAV\Client $client,
             private Attempt $attempt,
-            private string $takeout_path,
+            private array $takeout_paths,
             private string $target_path,
             private string $albums_base_path,
             private bool $dry_run,
             private bool $delete_duplicates
     ) {
-        $this->takeout_path = rtrim($takeout_path, '/');
+        $this->takeout_paths = array_map(fn(string $path) => rtrim($path, '/'), $takeout_paths);
         $this->target_path = rtrim($target_path, '/');
         $this->albums_base_path = rtrim($albums_base_path, '/');
     }
@@ -60,7 +63,7 @@ class RemoteTakeoutTask {
     }
 
     private function relative(string $path): string {
-        foreach ([$this->takeout_path, $this->target_path] as $base) {
+        foreach ([...$this->takeout_paths, $this->target_path] as $base) {
             if (self::isInside($path, $base)) {
                 return basename($base) . substr($path, strlen($base));
             }
@@ -69,24 +72,42 @@ class RemoteTakeoutTask {
     }
 
     public function __invoke(): array {
-        if (self::isInside($this->target_path, $this->takeout_path)) {
-            throw new \Exception('Target directory must not be inside the takeout directory');
+        foreach ($this->takeout_paths as $takeout_path) {
+            if (self::isInside($this->target_path, $takeout_path)) {
+                throw new \Exception('Target directory must not be inside the takeout directory');
+            }
         }
 
         $this->log('Indexing existing files in ' . $this->target_path);
         $indexed = 0;
-        $this->walk($this->target_path, function (string $directory, array $children) use (&$indexed) {
-            foreach ($children as $path => $props) {
-                if (self::isCollection($props) === false && isset($props['{DAV:}getcontentlength'])) {
-                    $this->index($path, $props, $path);
-                    $indexed++;
+        $target_exists = $this->exists($this->target_path);
+        if ($target_exists === false) {
+            $this->log('Creating ' . $this->target_path);
+            $this->mkdirs($this->target_path);
+        }
+        if ($target_exists) {
+            $this->walk($this->target_path, function (string $directory, array $children) use (&$indexed) {
+                foreach ($children as $path => $props) {
+                    if (self::isCollection($props) === false && isset($props['{DAV:}getcontentlength'])) {
+                        $this->index($path, $props, $path);
+                        $indexed++;
+                    }
                 }
-            }
-        }, $this->takeout_path);
+            }, $this->takeout_paths);
+        }
         $this->log('Indexed ' . $indexed . ' existing files');
 
-        $this->log('Walking takeout in ' . $this->takeout_path);
-        $this->walk($this->takeout_path, fn(string $directory, array $children) => $this->processDirectory($directory, $children));
+        // group directories by name, so a directory split over several exports is processed as one
+        $groups = [];
+        foreach ($this->takeout_paths as $takeout_path) {
+            $this->log('Walking takeout in ' . $takeout_path);
+            $this->walk($takeout_path, function (string $directory, array $children) use (&$groups) {
+                $groups[basename($directory)][$directory] = $children;
+            });
+        }
+        foreach ($groups as $name => $directories) {
+            $this->processDirectories((string) $name, $directories);
+        }
 
         $this->log('Moved ' . $this->stats['moved'] . ' files, '
                 . ($this->delete_duplicates ? 'deleted ' : 'found ') . $this->stats['duplicates'] . ' duplicates, '
@@ -116,13 +137,19 @@ class RemoteTakeoutTask {
         return $children;
     }
 
-    private function walk(string $directory, callable $callback, ?string $exclude = null): void {
+    private function walk(string $directory, callable $callback, array $excludes = []): void {
         $children = $this->list($directory);
         $callback($directory, $children);
         foreach ($children as $path => $props) {
-            if (self::isCollection($props) && ($exclude === null || self::isInside($path, $exclude) === false)) {
-                $this->walk($path, $callback, $exclude);
+            if (self::isCollection($props) === false) {
+                continue;
             }
+            foreach ($excludes as $exclude) {
+                if (self::isInside($path, $exclude)) {
+                    continue 2;
+                }
+            }
+            $this->walk($path, $callback, $excludes);
         }
     }
 
@@ -189,7 +216,7 @@ class RemoteTakeoutTask {
         return json_decode($response['body'], true);
     }
 
-    private function albumTitle(string $directory, array $json_paths): ?string {
+    private function albumTitle(string $directory_name, array $json_paths): ?string {
         foreach ($json_paths as $json_path) {
             if (in_array(mb_strtolower(basename($json_path)), self::ALBUM_METADATA_FILENAMES, true) === false) {
                 continue;
@@ -198,7 +225,7 @@ class RemoteTakeoutTask {
             if (is_array($metadata) === false || array_key_exists('title', $metadata) === false) {
                 continue;
             }
-            return empty($metadata['title']) ? basename($directory) : str_replace('/', '-', $metadata['title']);
+            return empty($metadata['title']) ? $directory_name : str_replace('/', '-', $metadata['title']);
         }
         return null;
     }
@@ -224,6 +251,23 @@ class RemoteTakeoutTask {
 
         $this->log('[' . basename($path) . '] - No sidecar metadata, falling back to last modified time');
         return new \DateTimeImmutable($props['{DAV:}getlastmodified'] ?? 'now');
+    }
+
+    private function exists(string $path): bool {
+        $attempt = $this->attempt;
+        return $attempt('request', 'HEAD', self::encode($path))['statusCode'] !== 404;
+    }
+
+    private function mkdirs(string $path): void {
+        if ($this->dry_run || $this->exists($path)) {
+            return;
+        }
+        $this->mkdirs(dirname($path));
+        $attempt = $this->attempt;
+        $response = $attempt('request', 'MKCOL', self::encode($path));
+        if ($response['statusCode'] !== 201) {
+            throw new \Exception('Could not create "' . $path . '" (' . $response['statusCode'] . ')');
+        }
     }
 
     private function ensureDirectory(string $directory): void {
@@ -324,16 +368,21 @@ class RemoteTakeoutTask {
         return false;
     }
 
-    private function processDirectory(string $directory, array $children): void {
+    /**
+     * @param array<string, array> $directories directories with the same name => their children
+     */
+    private function processDirectories(string $name, array $directories): void {
         $json_paths = [];
         $media = [];
-        foreach ($children as $path => $props) {
-            if (self::isCollection($props)) {
-                continue;
-            } elseif (str_ends_with(strtolower($path), '.json')) {
-                $json_paths[] = $path;
-            } elseif (str_starts_with(basename($path), '.') === false) {
-                $media[$path] = $props;
+        foreach ($directories as $children) {
+            foreach ($children as $path => $props) {
+                if (self::isCollection($props)) {
+                    continue;
+                } elseif (str_ends_with(strtolower($path), '.json')) {
+                    $json_paths[] = $path;
+                } elseif (str_starts_with(basename($path), '.') === false) {
+                    $media[$path] = $props;
+                }
             }
         }
         if (count($media) === 0) {
@@ -341,8 +390,9 @@ class RemoteTakeoutTask {
         }
 
         IO::write('---');
-        $album = $this->albumTitle($directory, $json_paths);
-        $this->log('Processing "' . $this->relative($directory) . '" with ' . count($media) . ' media files' . ($album !== null ? ', album "' . $album . '"' : ''));
+        $album = $this->albumTitle($name, $json_paths);
+        $this->log('Processing "' . $name . '"' . (count($directories) > 1 ? ' from ' . count($directories) . ' exports' : '')
+                . ' with ' . count($media) . ' media files' . ($album !== null ? ', album "' . $album . '"' : ''));
 
         $index = 0;
         foreach ($media as $path => $props) {
