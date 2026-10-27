@@ -56,6 +56,31 @@ $client = new Sabre\DAV\Client([
     'authType' => 1, //Basic authentication
         ]);
 
+$files_base_path = '/' . NEXTCLOUD_PREFIX .'/files/' . NEXTCLOUD_USER;
+$albums_base_path = '/' . NEXTCLOUD_PREFIX .'/photos/' . NEXTCLOUD_USER . '/albums';
+
+if (isset($_ENV['NEXTCLOUD_TAKEOUT_PATH'])) {
+    // Takeout is already extracted inside Nextcloud: move files instead of uploading them
+    $dry_run = filter_var($_ENV['DRY_RUN'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    $delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALIDATE_BOOLEAN);
+    IO::write('Importing takeout from Nextcloud path ' . $_ENV['NEXTCLOUD_TAKEOUT_PATH']
+            . ($dry_run ? ' (dry run, nothing will be changed)' : '')
+            . ($delete_duplicates ? '' : ' (keeping duplicates)'));
+
+    $task = new Rikmeijer\Googlephotos2nextcloud\RemoteTakeoutTask(
+            $client,
+            new Rikmeijer\Googlephotos2nextcloud\Attempt($client),
+            rawurldecode($files_base_path) . '/' . trim($_ENV['NEXTCLOUD_TAKEOUT_PATH'], '/'),
+            rawurldecode($files_base_path . NEXTCLOUD_UPLOAD_PATH),
+            rawurldecode($albums_base_path),
+            $dry_run,
+            $delete_duplicates
+    );
+    $task();
+    IO::write('Done!');
+    exit;
+}
+
 IO::write('Looking for album metadata files in: ' . WORKING_DIRECTORY);
 $user_albums = [];
 $user_albums_metadata_files = array_merge(
@@ -75,9 +100,6 @@ foreach ($user_albums_metadata_files as $user_albums_metadata_file) {
     }
 }
 IO::write('Found ' . count($user_albums) . ' user albums');
-
-$files_base_path = '/' . NEXTCLOUD_PREFIX .'/files/' . NEXTCLOUD_USER;
-$albums_base_path = '/' . NEXTCLOUD_PREFIX .'/photos/' . NEXTCLOUD_USER . '/albums';
 
 IO::write('Retrieving remote albums...');
 $available_album_resources = $client->propfind($albums_base_path, [
