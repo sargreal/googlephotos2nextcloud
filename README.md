@@ -53,16 +53,21 @@ A takeout split over several exports does not need to be merged first: put the e
 (e.g. `/Takeout;/Takeout (1)`). Folders with the same name in different exports are treated as one, so a photo's
 JSON sidecar or an album's `metadata.json` may be in another export than the photo itself.
 
-
 - every photo/video is moved to `<NEXTCLOUD_URL path>/<year>/<month>/`, using the taken time from its JSON sidecar
   (falling back to the date Nextcloud extracted from EXIF, then the modification time)
+- the modification and creation time are set to the taken time. Nextcloud Photos only calculates its date when a
+  file is created, so files without an EXIF date are copied on the server and the original is deleted instead of
+  being moved (they get a new file id)
+- files already in the target whose date in Nextcloud Photos does not match their year/month directory (e.g. moved
+  by an earlier version of this tool) are repaired the same way, when their JSON sidecar is still in the takeout
 - files whose contents already exist below the target path are deleted (they end up in the Nextcloud trash bin);
   set `DELETE_DUPLICATES=false` to leave them in place
 - files in album directories (directories with a `metadata.json`) are added to the matching Nextcloud Photos album,
   which is created when missing
 - the JSON sidecars stay in the takeout directory, which can be removed once you are happy with the result
 
-No local files or Imagick are needed for this mode. Run with `DRY_RUN=true` first to see what would happen.
+No local files or Imagick are needed for this mode. Run with `DRY_RUN=true` (or `php gp2nc.php --dry-run`) first
+to see what would happen; the first log line says `(dry run, nothing will be changed)` when it is active.
 
 ```dotenv
 NEXTCLOUD_URL=https://user:s3cr3t@cloud.example.com/Photos

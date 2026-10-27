@@ -9,6 +9,11 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  * the target are deleted (they end up in the Nextcloud trash bin), and files from album directories
  * are added to the corresponding Nextcloud Photos album.
  *
+ * The modification and creation time are set to the taken time. Nextcloud Photos sorts on a date it only
+ * calculates when a file is created (from EXIF, else from the modification time), and a MOVE keeps the old
+ * value, so files where that date is wrong are copied server-side and the original is deleted instead.
+ * Files in the target with such a wrong date (e.g. moved by an earlier version) are repaired the same way.
+ *
  * A takeout split over several exports can be imported at once: directories with the same name (e.g. an album
  * or "Photos from 2020") are treated as one, so sidecars and album metadata are found in any of the exports.
  *
@@ -17,6 +22,8 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  */
 class RemoteTakeoutTask {
 
+    const TEMPORARY_PREFIX = '.gp2nc-tmp-';
+    const DATE_TOLERANCE = 86400; // EXIF dates are local time, sidecar dates are UTC
     const ALBUM_METADATA_FILENAMES = ['metadata.json', 'metadaten.json', 'métadonnées.json', 'metadatos.json', 'metadati.json', 'metadane.json', 'metadados.json'];
     const PROPERTIES = [
         '{DAV:}getcontentlength',
@@ -34,7 +41,9 @@ class RemoteTakeoutTask {
     /** @var array<string, array<string, true>>|null album name => [fileid => true] */
     private ?array $albums = null;
     private array $created_directories = [];
-    private array $stats = ['moved' => 0, 'duplicates' => 0, 'album_additions' => 0, 'errors' => 0];
+    /** @var array<string, true> files whose date repair was interrupted */
+    private array $interrupted_repairs = [];
+    private array $stats = ['moved' => 0, 'duplicates' => 0, 'album_additions' => 0, 'dates_repaired' => 0, 'errors' => 0];
 
     public function __construct(
             private \Sabre\DAV\Client $client,
@@ -88,10 +97,16 @@ class RemoteTakeoutTask {
         if ($target_exists) {
             $this->walk($this->target_path, function (string $directory, array $children) use (&$indexed) {
                 foreach ($children as $path => $props) {
-                    if (self::isCollection($props) === false && isset($props['{DAV:}getcontentlength'])) {
-                        $this->index($path, $props, $path);
-                        $indexed++;
+                    if (self::isCollection($props) || isset($props['{DAV:}getcontentlength']) === false) {
+                        continue;
+                    } elseif (str_starts_with(basename($path), self::TEMPORARY_PREFIX)) {
+                        $this->log('Removing leftover "' . $this->relative($path) . '" of an interrupted run');
+                        $this->delete($path);
+                        $this->interrupted_repairs[dirname($path) . '/' . substr(basename($path), strlen(self::TEMPORARY_PREFIX))] = true;
+                        continue;
                     }
+                    $this->index($path, $props, $path);
+                    $indexed++;
                 }
             }, $this->takeout_paths);
         }
@@ -109,9 +124,24 @@ class RemoteTakeoutTask {
             $this->processDirectories((string) $name, $directories);
         }
 
+        $all_sidecars = [];
+        foreach ($groups as $directories) {
+            foreach ($directories as $children) {
+                foreach (array_keys($children) as $path) {
+                    if (str_ends_with(strtolower($path), '.json')) {
+                        $all_sidecars[basename($path)][] = $path;
+                    }
+                }
+            }
+        }
+        IO::write('---');
+        $this->log('Checking dates of files in ' . $this->target_path);
+        $this->repairDates($all_sidecars);
+
         $this->log('Moved ' . $this->stats['moved'] . ' files, '
                 . ($this->delete_duplicates ? 'deleted ' : 'found ') . $this->stats['duplicates'] . ' duplicates, '
                 . 'made ' . $this->stats['album_additions'] . ' album additions, '
+                . 'repaired dates of ' . $this->stats['dates_repaired'] . ' files, '
                 . $this->stats['errors'] . ' errors');
         return $this->stats;
     }
@@ -230,17 +260,29 @@ class RemoteTakeoutTask {
         return null;
     }
 
-    private function takenTime(string $path, array $props, array $json_paths): \DateTimeImmutable {
-        $json_by_name = [];
-        foreach ($json_paths as $json_path) {
-            $json_by_name[basename($json_path)] = $json_path;
-        }
-        foreach (SidecarMatcher::candidates(basename($path), array_keys($json_by_name)) as $json_name) {
-            $timestamp = SidecarMatcher::timestamp($this->fetchJson($json_by_name[$json_name]));
-            if ($timestamp !== null) {
-                $this->log('[' . basename($path) . '] - Taken time from ' . $json_name);
-                return new \DateTimeImmutable('@' . $timestamp);
+    /**
+     * @param array<string, string[]> $sidecars json filename => paths
+     * @param array<string, string[]> $sidecar_index SidecarMatcher::index() of the json filenames
+     * @return int[] timestamps found in the sidecars of the media file
+     */
+    private function sidecarTimestamps(string $media_filename, array $sidecars, array $sidecar_index): array {
+        $timestamps = [];
+        foreach (SidecarMatcher::indexedCandidates($media_filename, $sidecar_index) as $json_name) {
+            foreach ($sidecars[$json_name] as $json_path) {
+                $timestamp = SidecarMatcher::timestamp($this->fetchJson($json_path));
+                if ($timestamp !== null) {
+                    $timestamps[] = $timestamp;
+                }
             }
+        }
+        return $timestamps;
+    }
+
+    private function takenTime(string $path, array $props, array $sidecars, array $sidecar_index): \DateTimeImmutable {
+        $timestamps = $this->sidecarTimestamps(basename($path), $sidecars, $sidecar_index);
+        if (count($timestamps) > 0) {
+            $this->log('[' . basename($path) . '] - Taken time from sidecar metadata');
+            return new \DateTimeImmutable('@' . $timestamps[0]);
         }
 
         $original = $props['{http://nextcloud.org/ns}metadata-photos-original_date_time'] ?? null;
@@ -270,6 +312,43 @@ class RemoteTakeoutTask {
         }
     }
 
+    private function properties(string $path): array {
+        $attempt = $this->attempt;
+        return $attempt('propFind', self::encode($path), self::PROPERTIES, 0);
+    }
+
+    private function delete(string $path): void {
+        if ($this->dry_run) {
+            return;
+        }
+        $attempt = $this->attempt;
+        $response = $attempt('request', 'DELETE', self::encode($path));
+        if ($response['statusCode'] < 200 || $response['statusCode'] > 299) {
+            throw new \Exception('Could not delete "' . $path . '" (' . $response['statusCode'] . ')');
+        }
+    }
+
+    private function setDates(string $path, int $timestamp): void {
+        if ($this->dry_run) {
+            return;
+        }
+        $attempt = $this->attempt;
+        if ($attempt('propPatch', self::encode($path), [
+                    '{DAV:}lastmodified' => $timestamp,
+                    '{http://nextcloud.org/ns}creation_time' => $timestamp,
+                ]) !== true) {
+            throw new \Exception('Could not set dates of "' . $path . '"');
+        }
+    }
+
+    /**
+     * Whether the date Nextcloud Photos sorts on is (close to) the given time.
+     */
+    static function photosDateMatches(array $props, int $timestamp): bool {
+        $original = $props['{http://nextcloud.org/ns}metadata-photos-original_date_time'] ?? null;
+        return is_numeric($original) && abs((int) $original - $timestamp) <= self::DATE_TOLERANCE;
+    }
+
     private function ensureDirectory(string $directory): void {
         if ($this->dry_run || isset($this->created_directories[$directory])) {
             return;
@@ -279,7 +358,15 @@ class RemoteTakeoutTask {
         $this->created_directories[$directory] = true;
     }
 
-    private function albumFileIds(string $album): array {
+    /**
+     * @return string[] albums containing the file
+     */
+    private function albumsContaining(string $fileid): array {
+        $this->albumFileIds(null);
+        return array_values(array_filter(array_keys($this->albums), fn($album) => isset($this->albumFileIds((string) $album)[$fileid])));
+    }
+
+    private function albumFileIds(?string $album): array {
         $attempt = $this->attempt;
         if ($this->albums === null) {
             $this->albums = [];
@@ -289,6 +376,9 @@ class RemoteTakeoutTask {
                     $this->albums[$name] = null; // contents are loaded lazily
                 }
             }
+        }
+        if ($album === null) {
+            return [];
         }
 
         if (array_key_exists($album, $this->albums) === false) {
@@ -331,9 +421,9 @@ class RemoteTakeoutTask {
     }
 
     /**
-     * Moves the file without overwriting, picking "name(n).ext" when the name is taken.
+     * Moves (or copies) the file without overwriting, picking "name(n).ext" when the name is taken.
      */
-    private function move(string $path, string $directory): string {
+    private function move(string $path, string $directory, string $method = 'MOVE'): string {
         $attempt = $this->attempt;
         $filename = pathinfo($path, PATHINFO_FILENAME);
         $extension = pathinfo($path, PATHINFO_EXTENSION);
@@ -346,14 +436,14 @@ class RemoteTakeoutTask {
                 }
                 return $destination;
             }
-            $response = $attempt('request', 'MOVE', self::encode($path), headers: [
+            $response = $attempt('request', $method, self::encode($path), headers: [
                 'Destination' => $this->client->getAbsoluteUrl(self::encode($destination)),
                 'Overwrite' => 'F',
             ]);
             if ($response['statusCode'] === 201 || $response['statusCode'] === 204) {
                 return $destination;
             } elseif ($response['statusCode'] !== 412) {
-                throw new \Exception('Could not move to "' . $destination . '" (' . $response['statusCode'] . ')');
+                throw new \Exception('Could not ' . strtolower($method) . ' to "' . $destination . '" (' . $response['statusCode'] . ')');
             }
         }
         throw new \Exception('Could not find an available filename in "' . $directory . '"');
@@ -366,6 +456,88 @@ class RemoteTakeoutTask {
             }
         }
         return false;
+    }
+
+    /**
+     * Repairs files below <target>/Y/m whose date in Nextcloud Photos is outside that month, when a sidecar
+     * with a taken time in that month is found.
+     *
+     * @param array<string, string[]> $sidecars json filename => paths
+     */
+    private function repairDates(array $sidecars): void {
+        $sidecar_index = SidecarMatcher::index(array_keys($sidecars));
+        $pattern = '#^' . preg_quote($this->target_path, '#') . '/(\d{4})/(\d{2})/[^/]+$#';
+        foreach ($this->target_by_size as $entries) {
+            foreach ($entries as $path => $entry) {
+                if ($entry['real'] !== $path || preg_match($pattern, $path, $matches) !== 1) {
+                    continue; // not moved yet (dry run) or not in the year/month structure
+                }
+                $props = $entry['props'];
+                $month_start = gmmktime(0, 0, 0, (int) $matches[2], 1, (int) $matches[1]);
+                $month_end = gmmktime(0, 0, 0, (int) $matches[2] + 1, 1, (int) $matches[1]);
+                $original = $props['{http://nextcloud.org/ns}metadata-photos-original_date_time'] ?? null;
+                if (is_numeric($original) && $original >= $month_start - self::DATE_TOLERANCE && $original < $month_end + self::DATE_TOLERANCE) {
+                    continue;
+                }
+
+                try {
+                    // "name(n).ext" may also have been renamed because of a name collision in the target
+                    $timestamps = [
+                        ...$this->sidecarTimestamps(basename($path), $sidecars, $sidecar_index),
+                        ...$this->sidecarTimestamps(preg_replace('/\(\d+\)(?=\.[^.]*$)/', '', basename($path)), $sidecars, $sidecar_index),
+                    ];
+                    $timestamp = null;
+                    foreach ($timestamps as $candidate) {
+                        if ($candidate >= $month_start && $candidate < $month_end) {
+                            $timestamp = $candidate;
+                            break;
+                        }
+                    }
+                    $modified = strtotime($props['{DAV:}getlastmodified'] ?? '');
+                    if ($timestamp === null || ($modified === $timestamp && isset($this->interrupted_repairs[$path]) === false)) {
+                        continue; // no sidecar, or dates were already set and the date in Photos comes from EXIF
+                    }
+                    $this->repairDate($path, $props, $timestamp);
+                } catch (\Exception $e) {
+                    $this->stats['errors']++;
+                    $this->log('[' . basename($path) . '] - Failed repairing date: ' . $e->getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Copying makes Nextcloud Photos calculate the date again; the copy replaces the original, so it gets a
+     * new file id and is added to the albums of the original again.
+     */
+    private function repairDate(string $path, array $props, int $timestamp): void {
+        $this->log('[' . $this->relative($path) . '] - Repairing date to ' . gmdate('Y-m-d H:i:s', $timestamp));
+        $fileid = (string) ($props['{http://owncloud.org/ns}fileid'] ?? '');
+        $albums = $this->albumsContaining($fileid);
+        $this->setDates($path, $timestamp);
+        $this->stats['dates_repaired']++;
+        if ($this->dry_run) {
+            return;
+        }
+
+        $attempt = $this->attempt;
+        $temporary = dirname($path) . '/' . self::TEMPORARY_PREFIX . basename($path);
+        foreach ([[$path, $temporary, 'COPY'], [$temporary, $path, 'MOVE']] as [$source, $destination, $method]) {
+            $response = $attempt('request', $method, self::encode($source), headers: [
+                'Destination' => $this->client->getAbsoluteUrl(self::encode($destination)),
+                'Overwrite' => 'T',
+            ]);
+            if ($response['statusCode'] < 200 || $response['statusCode'] > 299) {
+                throw new \Exception('Could not ' . strtolower($method) . ' "' . $source . '" (' . $response['statusCode'] . ')');
+            }
+        }
+
+        $new_props = $this->properties($path);
+        $this->target_by_size[(int) $props['{DAV:}getcontentlength']][$path]['props'] = $new_props;
+        foreach ($albums as $album) {
+            unset($this->albums[$album][$fileid]);
+            $this->addToAlbum($album, $path, $new_props);
+        }
     }
 
     /**
@@ -389,6 +561,12 @@ class RemoteTakeoutTask {
             return;
         }
 
+        $sidecars = [];
+        foreach ($json_paths as $json_path) {
+            $sidecars[basename($json_path)][] = $json_path;
+        }
+        $sidecar_index = SidecarMatcher::index(array_keys($sidecars));
+
         IO::write('---');
         $album = $this->albumTitle($name, $json_paths);
         $this->log('Processing "' . $name . '"' . (count($directories) > 1 ? ' from ' . count($directories) . ' exports' : '')
@@ -409,25 +587,33 @@ class RemoteTakeoutTask {
                     $this->stats['duplicates']++;
                     if ($this->delete_duplicates) {
                         $this->log('[' . $name . '] - Deleting duplicate');
-                        if ($this->dry_run === false) {
-                            $attempt = $this->attempt;
-                            $response = $attempt('request', 'DELETE', self::encode($path));
-                            if ($response['statusCode'] < 200 || $response['statusCode'] > 299) {
-                                throw new \Exception('Could not delete (' . $response['statusCode'] . ')');
-                            }
-                        }
+                        $this->delete($path);
                     }
                     continue;
                 }
 
-                $target_directory = $this->target_path . $this->takenTime($path, $props, $json_paths)->format('/Y/m');
-                if ($album !== null) {
-                    // file ids survive a move, so adding before moving keeps album membership even if the move fails
-                    $this->addToAlbum($album, $path, $props);
-                }
+                $taken_time = $this->takenTime($path, $props, $sidecars, $sidecar_index);
+                $target_directory = $this->target_path . $taken_time->format('/Y/m');
                 $this->ensureDirectory($target_directory);
-                $destination = $this->move($path, $target_directory);
-                $this->log('[' . $name . '] - ' . $index . '/' . count($media) . ' moved to "' . $this->relative($destination) . '"');
+                $this->setDates($path, $taken_time->getTimestamp());
+
+                if (self::photosDateMatches($props, $taken_time->getTimestamp())) {
+                    if ($album !== null) {
+                        // file ids survive a move, so adding before moving keeps album membership even if the move fails
+                        $this->addToAlbum($album, $path, $props);
+                    }
+                    $destination = $this->move($path, $target_directory);
+                    $this->log('[' . $name . '] - ' . $index . '/' . count($media) . ' moved to "' . $this->relative($destination) . '"');
+                } else {
+                    // a copy makes Nextcloud Photos calculate its date again, a move does not
+                    $destination = $this->move($path, $target_directory, 'COPY');
+                    $this->log('[' . $name . '] - ' . $index . '/' . count($media) . ' copied to "' . $this->relative($destination) . '" (to update the date in Nextcloud Photos)');
+                    $props = $this->dry_run ? $props : $this->properties($destination);
+                    if ($album !== null) {
+                        $this->addToAlbum($album, $destination, $props);
+                    }
+                    $this->delete($path);
+                }
                 if (isset($this->hashes[$path])) {
                     $this->hashes[$destination] = $this->hashes[$path];
                 }

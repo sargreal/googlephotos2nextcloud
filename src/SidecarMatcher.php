@@ -53,6 +53,42 @@ class SidecarMatcher {
         return [];
     }
 
+    /**
+     * Media files and their sidecars share the start of their name, so bucketing on it avoids comparing every
+     * media file with every json file.
+     */
+    static function key(string $filename): string {
+        return mb_substr(preg_split('/[.(]/', $filename, 2)[0], 0, 5);
+    }
+
+    /**
+     * @param string[] $json_filenames
+     * @return array<string, string[]> to be used with indexedCandidates()
+     */
+    static function index(array $json_filenames): array {
+        $index = [];
+        foreach (array_unique($json_filenames) as $json_filename) {
+            $index[self::key($json_filename)][] = $json_filename;
+        }
+        return $index;
+    }
+
+    static function indexedCandidates(string $media_filename, array $index): array {
+        $keys = [self::key($media_filename)];
+        $extension = pathinfo($media_filename, PATHINFO_EXTENSION);
+        $filename = pathinfo($media_filename, PATHINFO_FILENAME);
+        foreach (self::EDITED_SUFFIXES as $edited_suffix) {
+            if (str_ends_with($filename, $edited_suffix)) {
+                $keys[] = self::key(substr($filename, 0, -strlen($edited_suffix)) . '.' . $extension);
+            }
+        }
+        $json_filenames = [];
+        foreach (array_unique($keys) as $key) {
+            array_push($json_filenames, ...($index[$key] ?? []));
+        }
+        return self::candidates($media_filename, $json_filenames);
+    }
+
     private static function direct(string $media_filename, array $json_filenames): array {
         $extension = pathinfo($media_filename, PATHINFO_EXTENSION);
         $filename = pathinfo($media_filename, PATHINFO_FILENAME);

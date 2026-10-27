@@ -15,6 +15,8 @@ IO::write('Working from ' . WORKING_DIRECTORY);
 
 $dotenv = Dotenv\Dotenv::createImmutable(file_exists(WORKING_DIRECTORY.'/.env')?WORKING_DIRECTORY:__DIR__);
 $dotenv->safeLoad();
+// $_ENV only contains environment variables when variables_order includes "E", which most php.ini files leave out
+$_ENV = getenv() + $_ENV;
 
 if (isset($_ENV['NEXTCLOUD_URL']) === false) {
     exit('Nextcloud URL missing, please set in .env or as environment variable');
@@ -61,8 +63,11 @@ $albums_base_path = '/' . NEXTCLOUD_PREFIX .'/photos/' . NEXTCLOUD_USER . '/albu
 
 if (isset($_ENV['NEXTCLOUD_TAKEOUT_PATH'])) {
     // Takeout is already extracted inside Nextcloud: move files instead of uploading them
-    $dry_run = filter_var($_ENV['DRY_RUN'] ?? false, FILTER_VALIDATE_BOOLEAN);
-    $delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALIDATE_BOOLEAN);
+    $dry_run = in_array('--dry-run', $argv, true) ? true : filter_var($_ENV['DRY_RUN'] ?? false, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    $delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    if ($dry_run === null || $delete_duplicates === null) {
+        exit('Invalid value for DRY_RUN or DELETE_DUPLICATES, use true or false');
+    }
     IO::write('Importing takeout from Nextcloud path ' . $_ENV['NEXTCLOUD_TAKEOUT_PATH']
             . ($dry_run ? ' (dry run, nothing will be changed)' : '')
             . ($delete_duplicates ? '' : ' (keeping duplicates)'));
