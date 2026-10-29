@@ -19,7 +19,7 @@ $dotenv->safeLoad();
 $_ENV = getenv() + $_ENV;
 // docker --env-file passes lines literally, so strip quotes and inline comments like a .env file would
 foreach ($_ENV as $name => $value) {
-    if (is_string($value) && (str_starts_with($name, 'NEXTCLOUD_') || in_array($name, ['DRY_RUN', 'DELETE_DUPLICATES'], true))) {
+    if (is_string($value) && (str_starts_with($name, 'NEXTCLOUD_') || in_array($name, ['DRY_RUN', 'DELETE_DUPLICATES', 'JOB', 'EXCLUDE_PATHS', 'TZ'], true))) {
         $value = trim($value);
         if (preg_match('/^(["\'])(.*)\1(\s+#.*)?$/', $value, $matches) === 1) {
             $_ENV[$name] = $matches[2];
@@ -72,13 +72,46 @@ $client = new Sabre\DAV\Client([
 $files_base_path = '/' . NEXTCLOUD_PREFIX .'/files/' . NEXTCLOUD_USER;
 $albums_base_path = '/' . NEXTCLOUD_PREFIX .'/photos/' . NEXTCLOUD_USER . '/albums';
 
+$dry_run = in_array('--dry-run', $argv, true) ? true : filter_var($_ENV['DRY_RUN'] ?? false, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+$delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+if ($dry_run === null || $delete_duplicates === null) {
+    exit('Invalid value for DRY_RUN or DELETE_DUPLICATES, use true or false');
+}
+if (isset($_ENV['TZ']) && $_ENV['TZ'] !== '' && @date_default_timezone_set($_ENV['TZ']) === false) {
+    exit('Invalid timezone in TZ: ' . $_ENV['TZ']);
+}
+// paths relative to the Nextcloud files root, separated by ';'
+$nextcloud_paths = fn(string $paths) => array_map(
+        fn(string $path) => rawurldecode($files_base_path) . '/' . trim($path, '/ '),
+        array_values(array_filter(explode(';', $paths), fn(string $path) => trim($path, '/ ') !== ''))
+);
+
+// the job can be given as JOB or as first argument, e.g. `php gp2nc.php reorganize --dry-run`
+$job = array_values(array_filter(array_slice($argv, 1), fn(string $arg) => str_starts_with($arg, '--') === false))[0] ?? $_ENV['JOB'] ?? 'import';
+if (in_array($job, Rikmeijer\Googlephotos2nextcloud\RemoteRepairTask::JOBS, true)) {
+    // repair files that are already in the target directory
+    IO::write('Running ' . $job . ' on ' . rawurldecode(NEXTCLOUD_UPLOAD_PATH)
+            . ($dry_run ? ' (dry run, nothing will be changed)' : '')
+            . ($delete_duplicates ? '' : ' (keeping duplicates)'));
+    $task = new Rikmeijer\Googlephotos2nextcloud\RemoteRepairTask(
+            $client,
+            new Rikmeijer\Googlephotos2nextcloud\Attempt($client),
+            $job,
+            rawurldecode($files_base_path . NEXTCLOUD_UPLOAD_PATH),
+            rawurldecode($albums_base_path),
+            $dry_run,
+            $delete_duplicates,
+            $nextcloud_paths($_ENV['EXCLUDE_PATHS'] ?? '')
+    );
+    $task();
+    IO::write('Done!');
+    exit;
+} elseif ($job !== 'import') {
+    exit('Unknown job "' . $job . '", use import, ' . implode(', ', Rikmeijer\Googlephotos2nextcloud\RemoteRepairTask::JOBS));
+}
+
 if (isset($_ENV['NEXTCLOUD_TAKEOUT_PATH'])) {
     // Takeout is already extracted inside Nextcloud: move files instead of uploading them
-    $dry_run = in_array('--dry-run', $argv, true) ? true : filter_var($_ENV['DRY_RUN'] ?? false, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-    $delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-    if ($dry_run === null || $delete_duplicates === null) {
-        exit('Invalid value for DRY_RUN or DELETE_DUPLICATES, use true or false');
-    }
     IO::write('Importing takeout from Nextcloud path ' . $_ENV['NEXTCLOUD_TAKEOUT_PATH']
             . ($dry_run ? ' (dry run, nothing will be changed)' : '')
             . ($delete_duplicates ? '' : ' (keeping duplicates)'));
@@ -86,10 +119,7 @@ if (isset($_ENV['NEXTCLOUD_TAKEOUT_PATH'])) {
     $task = new Rikmeijer\Googlephotos2nextcloud\RemoteTakeoutTask(
             $client,
             new Rikmeijer\Googlephotos2nextcloud\Attempt($client),
-            array_map(
-                    fn(string $path) => rawurldecode($files_base_path) . '/' . trim($path, '/ '),
-                    array_filter(explode(';', $_ENV['NEXTCLOUD_TAKEOUT_PATH']), fn(string $path) => trim($path, '/ ') !== '')
-            ),
+            $nextcloud_paths($_ENV['NEXTCLOUD_TAKEOUT_PATH']),
             rawurldecode($files_base_path . NEXTCLOUD_UPLOAD_PATH),
             rawurldecode($albums_base_path),
             $dry_run,

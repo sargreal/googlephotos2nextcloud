@@ -85,6 +85,40 @@ docker run --rm --env-file gp2nc.env gp2nc
 docker run --rm -e NEXTCLOUD_URL=<NEXTCLOUD_URL> -e NEXTCLOUD_TAKEOUT_PATH=/Takeouts gp2nc /app/gp2nc.php --dry-run
 ```
 
+## Repair jobs
+
+Two jobs tidy up media files that are already below the `NEXTCLOUD_URL` path. Select one with `JOB=<name>` or as
+argument (`php gp2nc.php <name>`); `DRY_RUN`, `--dry-run` and `DELETE_DUPLICATES` work as for the import.
+
+- `reorganize`: moves photos and videos that are not in the `<year>/<month>` directory of their date. The date is
+  taken from EXIF, else from the file name (see below), else from the modification time. Files already in a
+  `<year>/<month>` directory are only moved when their date comes from EXIF or the file name, because the
+  modification time is often just the upload time.
+- `filename-dates`: for photos and videos without an EXIF date whose name contains a date (`IMG_20190504.jpg`,
+  `IMG_20190504_142512.jpg`, `IMG-20190504-WA0001.jpg`, `PXL_…`, `VID_…`, `Screenshot_2019-05-04-14-25-12.png`, …),
+  moves them to the `<year>/<month>` directory of that date and sets their dates. Useful for takeout files without
+  JSON metadata, which the import puts in the month of the export.
+
+Both jobs set the modification and creation time, keep album memberships (a copy is used when needed to update the
+date in Nextcloud Photos, see above) and delete files that are identical to another file below the target. Files
+that are not photos or videos are ignored.
+
+```dotenv
+NEXTCLOUD_URL=https://user:s3cr3t@cloud.example.com/Photos
+JOB=filename-dates
+DRY_RUN=true
+# Optional, directories (relative to your Nextcloud files) to leave alone, separated by ;
+EXCLUDE_PATHS=/Photos/Wallpapers;/Photos/Scans
+# Optional, timezone of the times in file names (default UTC)
+TZ=Europe/Berlin
+```
+
+```sh
+docker run --rm --env-file gp2nc.env gp2nc
+# or
+docker run --rm --env-file gp2nc.env gp2nc /app/gp2nc.php reorganize --dry-run
+```
+
 ## Known errors
 
 Disk cache limit is set to 32GiB, files requiring larger cache will exhaust this and result in an error like:
