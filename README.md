@@ -97,9 +97,10 @@ argument (`php gp2nc.php <name>`); `DRY_RUN`, `--dry-run` and `DELETE_DUPLICATES
   EXIF date disagrees with the name, and all other files, are left unchanged. Useful for takeout files without JSON
   metadata, which the import puts in the month of the export.
 - `reorganize`: moves photos and videos that are not in the `<year>/<month>` directory of their date. The date is
-  taken from EXIF, else from the file name, else from the modification time. Files already in a `<year>/<month>`
-  directory are only moved when their date comes from EXIF or the file name, because the modification time is often
-  just the upload time.
+  taken from EXIF, else from the file name, else from the creation time, else from the modification time. Files
+  already in a `<year>/<month>` directory are only moved when their date comes from EXIF or the file name, because
+  the creation and modification time are often just the upload time. Files that are byte-identical to another file
+  are deleted; a file that only shares its name with a different file gets a `(n)` name, and the log says why.
 - `folder-albums`: only adds the files in album directories (see below) to their album, without moving anything.
 
 Directories directly below the target that are not years (e.g. `Photos/Holiday 2019`) are treated as albums: before

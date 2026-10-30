@@ -219,11 +219,13 @@ abstract class RemoteMediaTask {
         $this->setDates($path, $timestamp);
         if (self::photosDateMatches($props, $timestamp)) {
             $destination = $this->move($path, $directory);
+            $this->logRename($path, $props, $destination);
             $this->log('[' . $this->relative($path) . '] - Moved to "' . $this->relative($destination) . '"');
         } else {
             // a copy makes Nextcloud Photos calculate its date again, a move does not
             $albums = $this->albumsContaining($fileid);
             $destination = $this->move($path, $directory, 'COPY');
+            $this->logRename($path, $props, $destination);
             $this->log('[' . $this->relative($path) . '] - Copied to "' . $this->relative($destination) . '" (to update the date in Nextcloud Photos)');
             $new_props = $this->dry_run ? $props : $this->properties($destination);
             foreach ($albums as $album) {
@@ -442,6 +444,25 @@ abstract class RemoteMediaTask {
             }
         }
         throw new \Exception('Could not find an available filename in "' . $directory . '"');
+    }
+
+    /**
+     * Explains why a file got a "(n)" name: a different file with its name is already there.
+     */
+    protected function logRename(string $path, array $props, string $destination): void {
+        $taken = dirname($destination) . '/' . basename($path);
+        if (basename($destination) === basename($path)) {
+            return;
+        }
+        $size = (int) ($props['{DAV:}getcontentlength'] ?? 0);
+        foreach ($this->target_by_size as $existing_size => $entries) {
+            if (isset($entries[$taken])) {
+                $this->log('[' . $this->relative($path) . '] - "' . $this->relative($taken) . '" is a different file ('
+                        . ($existing_size === $size ? 'same size, different content' : 'size ' . $size . ' vs ' . $existing_size . ' bytes') . ')');
+                return;
+            }
+        }
+        $this->log('[' . $this->relative($path) . '] - "' . $this->relative($taken) . '" already exists');
     }
 
     protected function isIndexed(string $path): bool {

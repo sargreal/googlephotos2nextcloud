@@ -6,9 +6,9 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  * Repairs the year/month structure of media files that are already in the target directory.
  *
  * - reorganize: moves files that are not in the year/month directory of their date. The date comes from EXIF,
- *   then from the file name, then from the modification time. Files that are already in a year/month directory
- *   are only moved when their date comes from EXIF or the file name, as the modification time is often just
- *   the time of upload.
+ *   then from the file name, then from the creation time, then from the modification time. Files that are already
+ *   in a year/month directory are only moved when their date comes from EXIF or the file name, as the creation and
+ *   modification time are often just the time of upload.
  * - filename-dates: for files with a date in their name (e.g. IMG_20190504_142512.jpg) whose creation or
  *   modification time is more than a day off, sets both to that date (the Photos and Memories timelines use them
  *   when there is no EXIF date) and moves them to its year/month directory. Other files are left unchanged.
@@ -111,8 +111,8 @@ class RemoteRepairTask extends RemoteMediaTask {
             [$timestamp, $source, $reliable] = [(int) $original, 'EXIF', true];
         } elseif ($filename_date !== null) {
             [$timestamp, $source, $reliable] = [$filename_date, 'file name', true];
-        } elseif (is_numeric($original)) {
-            [$timestamp, $source, $reliable] = [(int) $original, 'modification time', false];
+        } elseif ((int) ($props['{http://nextcloud.org/ns}creation_time'] ?? 0) > 0) {
+            [$timestamp, $source, $reliable] = [(int) $props['{http://nextcloud.org/ns}creation_time'], 'creation time', false];
         } else {
             [$timestamp, $source, $reliable] = [strtotime($props['{DAV:}getlastmodified'] ?? 'now'), 'modification time', false];
         }
