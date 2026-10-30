@@ -87,21 +87,28 @@ docker run --rm -e NEXTCLOUD_URL=<NEXTCLOUD_URL> -e NEXTCLOUD_TAKEOUT_PATH=/Take
 
 ## Repair jobs
 
-Two jobs tidy up media files that are already below the `NEXTCLOUD_URL` path. Select one with `JOB=<name>` or as
+These jobs tidy up media files that are already below the `NEXTCLOUD_URL` path. Select one with `JOB=<name>` or as
 argument (`php gp2nc.php <name>`); `DRY_RUN`, `--dry-run` and `DELETE_DUPLICATES` work as for the import.
 
+- `filename-dates`: for photos and videos whose name contains a date (`IMG_20190504.jpg`, `IMG_20190504_142512.jpg`,
+  `IMG-20190504-WA0001.jpg`, `PXL_…`, `VID_…`, `Screenshot_2019-05-04-14-25-12.png`, …) and whose creation or
+  modification time is more than a day off, sets both to the date from the name (the Photos and Memories timelines
+  use them when there is no EXIF date) and moves the file to the `<year>/<month>` directory of that date. Files whose
+  EXIF date disagrees with the name, and all other files, are left unchanged. Useful for takeout files without JSON
+  metadata, which the import puts in the month of the export.
 - `reorganize`: moves photos and videos that are not in the `<year>/<month>` directory of their date. The date is
-  taken from EXIF, else from the file name (see below), else from the modification time. Files already in a
-  `<year>/<month>` directory are only moved when their date comes from EXIF or the file name, because the
-  modification time is often just the upload time.
-- `filename-dates`: for photos and videos without an EXIF date whose name contains a date (`IMG_20190504.jpg`,
-  `IMG_20190504_142512.jpg`, `IMG-20190504-WA0001.jpg`, `PXL_…`, `VID_…`, `Screenshot_2019-05-04-14-25-12.png`, …),
-  moves them to the `<year>/<month>` directory of that date and sets their dates. Useful for takeout files without
-  JSON metadata, which the import puts in the month of the export.
+  taken from EXIF, else from the file name, else from the modification time. Files already in a `<year>/<month>`
+  directory are only moved when their date comes from EXIF or the file name, because the modification time is often
+  just the upload time.
+- `folder-albums`: only adds the files in album directories (see below) to their album, without moving anything.
 
-Both jobs set the modification and creation time, keep album memberships (a copy is used when needed to update the
-date in Nextcloud Photos, see above) and delete files that are identical to another file below the target. Files
-that are not photos or videos are ignored.
+Directories directly below the target that are not years (e.g. `Photos/Holiday 2019`) are treated as albums: before
+a file in them (or in a subdirectory) is moved, it is added to the Nextcloud Photos album with the directory name,
+which is created when missing. Set `FOLDER_ALBUMS=false` to turn this off.
+
+The jobs set the modification and creation time of files they move, keep album memberships (a copy is used when
+needed to update the date in Nextcloud Photos, see above) and delete files that are identical to another file below
+the target. Files that are not photos or videos are ignored.
 
 ```dotenv
 NEXTCLOUD_URL=https://user:s3cr3t@cloud.example.com/Photos
@@ -111,6 +118,8 @@ DRY_RUN=true
 EXCLUDE_PATHS=/Photos/Wallpapers;/Photos/Scans
 # Optional, timezone of the times in file names (default UTC)
 TZ=Europe/Berlin
+# Optional, do not add files in album directories to their album
+FOLDER_ALBUMS=false
 ```
 
 ```sh

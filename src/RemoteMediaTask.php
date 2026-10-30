@@ -23,6 +23,7 @@ abstract class RemoteMediaTask {
         '{DAV:}resourcetype',
         '{http://owncloud.org/ns}checksums',
         '{http://owncloud.org/ns}fileid',
+        '{http://nextcloud.org/ns}creation_time',
         '{http://nextcloud.org/ns}metadata-photos-original_date_time',
         '{http://nextcloud.org/ns}metadata-photos-exif',
     ];
@@ -204,7 +205,13 @@ abstract class RemoteMediaTask {
 
         $directory = $this->directoryFor($timestamp);
         if (dirname($path) === $directory) {
-            $this->repairDate($path, $props, $timestamp);
+            if (self::photosDateMatches($props, $timestamp)) {
+                $this->log('[' . $this->relative($path) . '] - Setting dates to ' . gmdate('Y-m-d H:i:s', $timestamp));
+                $this->setDates($path, $timestamp);
+                $this->stats['dates_repaired']++;
+            } else {
+                $this->repairDate($path, $props, $timestamp);
+            }
             return;
         }
 

@@ -9,14 +9,18 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  *   then from the file name, then from the modification time. Files that are already in a year/month directory
  *   are only moved when their date comes from EXIF or the file name, as the modification time is often just
  *   the time of upload.
- * - filename-dates: for files without an EXIF date that have a date in their name (e.g. IMG_20190504_142512.jpg),
- *   uses that date: they are moved to its year/month directory and their dates are set.
+ * - filename-dates: for files with a date in their name (e.g. IMG_20190504_142512.jpg) whose creation or
+ *   modification time is more than a day off, sets both to that date (the Photos and Memories timelines use them
+ *   when there is no EXIF date) and moves them to its year/month directory. Other files are left unchanged.
+ * - folder-albums: only adds the files in album directories to their album, without moving anything.
  *
+ * Directories directly below the target that are not years (e.g. <target>/Holiday 2019) are albums: before a file
+ * in them is moved, it is added to the Nextcloud Photos album with the directory name (unless disabled).
  * Files are moved with their albums and identical files are deleted, like the takeout import does.
  */
 class RemoteRepairTask extends RemoteMediaTask {
 
-    const JOBS = ['reorganize', 'filename-dates'];
+    const JOBS = ['reorganize', 'filename-dates', 'folder-albums'];
 
     public function __construct(
             \Sabre\DAV\Client $client,
@@ -26,7 +30,8 @@ class RemoteRepairTask extends RemoteMediaTask {
             string $albums_base_path,
             bool $dry_run,
             bool $delete_duplicates,
-            private array $exclude_paths = []
+            private array $exclude_paths = [],
+            private bool $folder_albums = true
     ) {
         if (in_array($job, self::JOBS, true) === false) {
             throw new \Exception('Unknown job "' . $job . '", use one of: ' . implode(', ', self::JOBS));
@@ -39,9 +44,11 @@ class RemoteRepairTask extends RemoteMediaTask {
         $this->indexTarget($this->exclude_paths);
 
         IO::write('---');
-        $this->log($this->job === 'reorganize'
-                        ? 'Moving files that are not in the year/month directory of their date'
-                        : 'Using the date in the file name of files without EXIF date');
+        $this->log(match ($this->job) {
+                    'reorganize' => 'Moving files that are not in the year/month directory of their date',
+                    'filename-dates' => 'Using the date in the file name of files whose creation or modification time is off',
+                    'folder-albums' => 'Adding files in album directories to their album',
+                });
 
         // the index changes while files are moved, so work on a copy
         $files = [];
@@ -57,8 +64,19 @@ class RemoteRepairTask extends RemoteMediaTask {
                 continue;
             }
             try {
+                $album = $this->folder_albums ? $this->folderAlbum($path) : null;
+                if ($this->job === 'folder-albums') {
+                    if ($album !== null) {
+                        $this->addToAlbum($album, $path, $props);
+                    }
+                    continue;
+                }
                 $timestamp = $this->job === 'reorganize' ? $this->reorganizeDate($path, $props) : $this->filenameDate($path, $props);
                 if ($timestamp !== null) {
+                    if ($album !== null) {
+                        // the directory is the only record of the album, so add to it before the file leaves
+                        $this->addToAlbum($album, $path, $props);
+                    }
                     $this->relocate($path, $props, $timestamp);
                 }
             } catch (\Exception $e) {
@@ -110,15 +128,37 @@ class RemoteRepairTask extends RemoteMediaTask {
         return $timestamp;
     }
 
-    private function filenameDate(string $path, array $props): ?int {
-        $timestamp = FilenameDate::parse(basename($path));
-        if ($timestamp === null || self::hasExifDate($props)) {
-            return null; // the EXIF date is more precise
-        }
-        if (self::photosDateMatches($props, $timestamp) && dirname($path) === $this->directoryFor($timestamp)) {
+    /**
+     * The album of a file: the directory directly below the target it is in, unless that is a year directory.
+     */
+    private function folderAlbum(string $path): ?string {
+        $parts = explode('/', substr($path, strlen($this->target_path) + 1));
+        if (count($parts) < 2 || preg_match('/^\d{4}$/', $parts[0]) === 1) {
             return null;
         }
-        $this->log('[' . $this->relative($path) . '] - Date ' . gmdate('Y-m-d H:i:s', $timestamp) . ' from file name');
+        return $parts[0];
+    }
+
+    private function filenameDate(string $path, array $props): ?int {
+        $timestamp = FilenameDate::parse(basename($path));
+        if ($timestamp === null) {
+            return null;
+        }
+        $created = (int) ($props['{http://nextcloud.org/ns}creation_time'] ?? 0);
+        $modified = strtotime($props['{DAV:}getlastmodified'] ?? '');
+        $created_off = $created > 0 && abs($created - $timestamp) > self::DATE_TOLERANCE;
+        $modified_off = $modified !== false && abs($modified - $timestamp) > self::DATE_TOLERANCE;
+        if ($created_off === false && $modified_off === false) {
+            return null;
+        }
+
+        $original = $props['{http://nextcloud.org/ns}metadata-photos-original_date_time'] ?? null;
+        if (self::hasExifDate($props) && is_numeric($original) && abs((int) $original - $timestamp) > self::DATE_TOLERANCE) {
+            $this->log('[' . $this->relative($path) . '] - EXIF date ' . gmdate('Y-m-d', (int) $original) . ' differs from file name, left unchanged');
+            return null;
+        }
+        $this->log('[' . $this->relative($path) . '] - ' . ($created_off ? 'Creation time ' . gmdate('Y-m-d', $created) : 'Modification time ' . gmdate('Y-m-d', $modified))
+                . ' differs from file name date ' . gmdate('Y-m-d H:i:s', $timestamp));
         return $timestamp;
     }
 }

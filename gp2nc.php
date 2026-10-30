@@ -19,7 +19,7 @@ $dotenv->safeLoad();
 $_ENV = getenv() + $_ENV;
 // docker --env-file passes lines literally, so strip quotes and inline comments like a .env file would
 foreach ($_ENV as $name => $value) {
-    if (is_string($value) && (str_starts_with($name, 'NEXTCLOUD_') || in_array($name, ['DRY_RUN', 'DELETE_DUPLICATES', 'JOB', 'EXCLUDE_PATHS', 'TZ'], true))) {
+    if (is_string($value) && (str_starts_with($name, 'NEXTCLOUD_') || in_array($name, ['DRY_RUN', 'DELETE_DUPLICATES', 'JOB', 'EXCLUDE_PATHS', 'TZ', 'FOLDER_ALBUMS'], true))) {
         $value = trim($value);
         if (preg_match('/^(["\'])(.*)\1(\s+#.*)?$/', $value, $matches) === 1) {
             $_ENV[$name] = $matches[2];
@@ -77,6 +77,10 @@ $delete_duplicates = filter_var($_ENV['DELETE_DUPLICATES'] ?? true, FILTER_VALID
 if ($dry_run === null || $delete_duplicates === null) {
     exit('Invalid value for DRY_RUN or DELETE_DUPLICATES, use true or false');
 }
+$folder_albums = filter_var($_ENV['FOLDER_ALBUMS'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+if ($folder_albums === null) {
+    exit('Invalid value for FOLDER_ALBUMS, use true or false');
+}
 if (isset($_ENV['TZ']) && $_ENV['TZ'] !== '' && @date_default_timezone_set($_ENV['TZ']) === false) {
     exit('Invalid timezone in TZ: ' . $_ENV['TZ']);
 }
@@ -101,7 +105,8 @@ if (in_array($job, Rikmeijer\Googlephotos2nextcloud\RemoteRepairTask::JOBS, true
             rawurldecode($albums_base_path),
             $dry_run,
             $delete_duplicates,
-            $nextcloud_paths($_ENV['EXCLUDE_PATHS'] ?? '')
+            $nextcloud_paths($_ENV['EXCLUDE_PATHS'] ?? ''),
+            $folder_albums
     );
     $task();
     IO::write('Done!');
