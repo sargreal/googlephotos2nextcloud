@@ -17,6 +17,11 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  * Directories directly below the target that are not years (e.g. <target>/Holiday 2019) are albums: before a file
  * in them is moved, it is added to the Nextcloud Photos album with the directory name (unless disabled).
  * Files are moved with their albums and identical files are deleted, like the takeout import does.
+ *
+ * With similar duplicates enabled, reorganize first treats files with the same name (ignoring "(n)") and a taken
+ * time within a day as the same photo, e.g. an original and a recompressed copy: it keeps the largest file, adds
+ * the albums of the others to it and deletes them. At the end, files with the same name that remain in one
+ * directory are reported, to be checked manually.
  */
 class RemoteRepairTask extends RemoteMediaTask {
 
@@ -31,7 +36,8 @@ class RemoteRepairTask extends RemoteMediaTask {
             bool $dry_run,
             bool $delete_duplicates,
             private array $exclude_paths = [],
-            private bool $folder_albums = true
+            private bool $folder_albums = true,
+            private bool $similar_duplicates = false
     ) {
         if (in_array($job, self::JOBS, true) === false) {
             throw new \Exception('Unknown job "' . $job . '", use one of: ' . implode(', ', self::JOBS));
@@ -40,8 +46,24 @@ class RemoteRepairTask extends RemoteMediaTask {
         $this->exclude_paths = array_map(fn(string $path) => rtrim($path, '/'), $exclude_paths);
     }
 
+    protected function albumsOf(string $path, array $props): array {
+        $albums = parent::albumsOf($path, $props);
+        $folder_album = $this->folder_albums ? $this->folderAlbum($path) : null;
+        if ($folder_album !== null && in_array($folder_album, $albums, true) === false) {
+            $albums[] = $folder_album;
+        }
+        return $albums;
+    }
+
     public function __invoke(): array {
+        $this->stats['similar_duplicates'] = 0;
         $this->indexTarget($this->exclude_paths);
+
+        if ($this->job === 'reorganize' && $this->similar_duplicates) {
+            IO::write('---');
+            $this->log('Looking for the same photo in different files (same name, taken within a day)');
+            $this->deleteSimilarDuplicates();
+        }
 
         IO::write('---');
         $this->log(match ($this->job) {
@@ -60,8 +82,8 @@ class RemoteRepairTask extends RemoteMediaTask {
         ksort($files, SORT_NATURAL);
 
         foreach ($files as $path => $props) {
-            if (self::isMedia($props) === false) {
-                continue;
+            if (self::isMedia($props) === false || $this->isIndexed($path) === false) {
+                continue; // not a photo or video, or deleted as a duplicate
             }
             try {
                 $album = $this->folder_albums ? $this->folderAlbum($path) : null;
@@ -85,8 +107,14 @@ class RemoteRepairTask extends RemoteMediaTask {
             }
         }
 
+        if ($this->job !== 'folder-albums') {
+            $this->reportSameNames();
+        }
+
+        IO::write('---');
         $this->log('Moved ' . $this->stats['moved'] . ' files, '
-                . ($this->delete_duplicates ? 'deleted ' : 'found ') . $this->stats['duplicates'] . ' duplicates, '
+                . ($this->delete_duplicates ? 'deleted ' : 'found ') . $this->stats['duplicates'] . ' duplicates'
+                . ($this->similar_duplicates && $this->job === 'reorganize' ? ' and ' . $this->stats['similar_duplicates'] . ' similar duplicates' : '') . ', '
                 . 'repaired dates of ' . $this->stats['dates_repaired'] . ' files, '
                 . 'made ' . $this->stats['album_additions'] . ' album additions, '
                 . $this->stats['errors'] . ' errors');
@@ -126,6 +154,99 @@ class RemoteRepairTask extends RemoteMediaTask {
         }
         $this->log('[' . $this->relative($path) . '] - Date ' . gmdate('Y-m-d H:i:s', $timestamp) . ' from ' . $source);
         return $timestamp;
+    }
+
+    /**
+     * Within each group of media files with the same original name, keeps the largest file and deletes the files
+     * taken within a day of it, after adding their albums to it.
+     */
+    private function deleteSimilarDuplicates(): void {
+        $groups = [];
+        foreach ($this->target_by_size as $entries) {
+            foreach ($entries as $path => $entry) {
+                if (self::isMedia($entry['props'])) {
+                    $groups[self::originalName(basename($path))][$path] = $entry['props'];
+                }
+            }
+        }
+
+        foreach ($groups as $files) {
+            if (count($files) < 2) {
+                continue;
+            }
+            uasort($files, fn(array $a, array $b) => (int) $b['{DAV:}getcontentlength'] <=> (int) $a['{DAV:}getcontentlength']);
+            while (count($files) > 1) {
+                $kept = array_key_first($files);
+                $kept_props = array_shift($files);
+                $kept_time = self::takenTimestamp($kept, $kept_props);
+                foreach ($files as $path => $props) {
+                    $time = self::takenTimestamp($path, $props);
+                    if ($kept_time === null || $time === null || abs($kept_time - $time) > self::DATE_TOLERANCE) {
+                        continue;
+                    }
+                    unset($files[$path]);
+                    try {
+                        $this->deleteSimilar($path, $props, $kept, $kept_props);
+                    } catch (\Exception $e) {
+                        $this->stats['errors']++;
+                        $this->log('[' . $this->relative($path) . '] - Failed: ' . $e->getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    private function deleteSimilar(string $path, array $props, string $kept, array $kept_props): void {
+        $this->log('[' . $this->relative($path) . '] - Same photo as "' . $this->relative($kept) . '" ('
+                . self::formatSize($props) . ' vs ' . self::formatSize($kept_props) . ', taken '
+                . gmdate('Y-m-d H:i', self::takenTimestamp($path, $props)) . ' vs ' . gmdate('Y-m-d H:i', self::takenTimestamp($kept, $kept_props)) . ')');
+        $this->stats['similar_duplicates']++;
+        if ($this->delete_duplicates === false) {
+            return;
+        }
+        foreach ($this->albumsOf($path, $props) as $album) {
+            $this->addToAlbum($album, $kept, $kept_props);
+        }
+        $this->log('[' . $this->relative($path) . '] - Deleting the smaller file');
+        $this->delete($path);
+        $this->unindex($path, $props);
+    }
+
+    static function formatSize(array $props): string {
+        $size = (int) ($props['{DAV:}getcontentlength'] ?? 0);
+        return $size >= 1048576 ? round($size / 1048576, 1) . ' MB' : round($size / 1024) . ' KB';
+    }
+
+    /**
+     * Logs the media files that share their original name with another file in the same directory, i.e. got a
+     * "(n)" name because they are different files.
+     */
+    private function reportSameNames(): void {
+        $groups = [];
+        foreach ($this->target_by_size as $entries) {
+            foreach ($entries as $path => $entry) {
+                if (self::isMedia($entry['props'])) {
+                    $groups[dirname($path) . '/' . self::originalName(basename($path))][$path] = $entry['props'];
+                }
+            }
+        }
+        $groups = array_filter($groups, fn(array $files) => count($files) > 1);
+        if (count($groups) === 0) {
+            return;
+        }
+        ksort($groups, SORT_NATURAL);
+
+        IO::write('---');
+        $this->log('Files with the same name that were not deduplicated (' . count($groups) . '), please check them:');
+        foreach ($groups as $files) {
+            // the original name first, then the "(n)" names
+            uksort($files, fn(string $a, string $b) => [preg_match('/\(\d+\)\.[^.]*$/', $a), $a] <=> [preg_match('/\(\d+\)\.[^.]*$/', $b), $b]);
+            $this->log('  ' . $this->relative(dirname(array_key_first($files))) . ': ' . implode(', ', array_map(
+                    fn(string $path) => basename($path) . ' (' . self::formatSize($files[$path]) . ', taken '
+                    . (self::takenTimestamp($path, $files[$path]) === null ? 'unknown' : gmdate('Y-m-d H:i', self::takenTimestamp($path, $files[$path]))) . ')',
+                    array_keys($files)
+            )));
+        }
     }
 
     /**

@@ -101,11 +101,18 @@ argument (`php gp2nc.php <name>`); `DRY_RUN`, `--dry-run` and `DELETE_DUPLICATES
   already in a `<year>/<month>` directory are only moved when their date comes from EXIF or the file name, because
   the creation and modification time are often just the upload time. Files that are byte-identical to another file
   are deleted; a file that only shares its name with a different file gets a `(n)` name, and the log says why.
+  With `SIMILAR_DUPLICATES=true`, files with the same name (ignoring `(n)` and case) that were taken within a day
+  of each other are first treated as the same photo, e.g. an original and a recompressed copy from Google: the
+  largest file is kept, the albums of the others (including album directories) are added to it, and the others
+  are deleted.
 - `folder-albums`: only adds the files in album directories (see below) to their album, without moving anything.
 
 Directories directly below the target that are not years (e.g. `Photos/Holiday 2019`) are treated as albums: before
 a file in them (or in a subdirectory) is moved, it is added to the Nextcloud Photos album with the directory name,
 which is created when missing. Set `FOLDER_ALBUMS=false` to turn this off.
+
+At the end, `reorganize` and `filename-dates` list the files that share their name with another file in the same
+directory (`IMG_1234.jpg`, `IMG_1234(1).jpg`, …) with size and taken time, so they can be checked manually.
 
 The jobs set the modification and creation time of files they move, keep album memberships (a copy is used when
 needed to update the date in Nextcloud Photos, see above) and delete files that are identical to another file below
@@ -121,6 +128,8 @@ EXCLUDE_PATHS=/Photos/Wallpapers;/Photos/Scans
 TZ=Europe/Berlin
 # Optional, do not add files in album directories to their album
 FOLDER_ALBUMS=false
+# Optional (reorganize), keep only the largest of files with the same name taken within a day
+SIMILAR_DUPLICATES=true
 ```
 
 ```sh

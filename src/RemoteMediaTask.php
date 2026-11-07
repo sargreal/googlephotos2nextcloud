@@ -30,6 +30,8 @@ abstract class RemoteMediaTask {
 
     /** @var array<int, array<string, array{props: array, real: string}>> size => [path => entry] */
     protected array $target_by_size = [];
+    /** @var array<string, int> path => size of the indexed files */
+    protected array $indexed_paths = [];
     /** @var array<string, string> real path => md5 */
     protected array $hashes = [];
     /** @var array<string, array<string, true>>|null album name => [fileid => true] */
@@ -149,11 +151,50 @@ abstract class RemoteMediaTask {
     }
 
     protected function index(string $path, array $props, string $real): void {
-        $this->target_by_size[(int) $props['{DAV:}getcontentlength']][$path] = ['props' => $props, 'real' => $real];
+        $size = (int) $props['{DAV:}getcontentlength'];
+        $this->target_by_size[$size][$path] = ['props' => $props, 'real' => $real];
+        $this->indexed_paths[$path] = $size;
     }
 
     protected function unindex(string $path, array $props): void {
-        unset($this->target_by_size[(int) $props['{DAV:}getcontentlength']][$path]);
+        unset($this->target_by_size[(int) $props['{DAV:}getcontentlength']][$path], $this->indexed_paths[$path]);
+    }
+
+    /**
+     * The name a file had before it got a "(n)" because of a name collision, lowercased.
+     */
+    static function originalName(string $filename): string {
+        return mb_strtolower(preg_replace('/\s*\(\d+\)(?=\.[^.]*$|$)/', '', $filename));
+    }
+
+    /**
+     * The best known taken time: EXIF, else the date in the file name, else the creation time, else the
+     * modification time.
+     */
+    static function takenTimestamp(string $path, array $props): ?int {
+        $original = $props['{http://nextcloud.org/ns}metadata-photos-original_date_time'] ?? null;
+        if (self::hasExifDate($props) && is_numeric($original)) {
+            return (int) $original;
+        }
+        $filename_date = FilenameDate::parse(basename($path));
+        if ($filename_date !== null) {
+            return $filename_date;
+        }
+        $created = (int) ($props['{http://nextcloud.org/ns}creation_time'] ?? 0);
+        if ($created > 0) {
+            return $created;
+        }
+        $modified = strtotime($props['{DAV:}getlastmodified'] ?? '');
+        return $modified === false ? null : $modified;
+    }
+
+    /**
+     * Albums the file belongs to, which must be kept when it is replaced by a copy or deleted as a duplicate.
+     *
+     * @return string[]
+     */
+    protected function albumsOf(string $path, array $props): array {
+        return $this->albumsContaining((string) ($props['{http://owncloud.org/ns}fileid'] ?? ''));
     }
 
     static function isMedia(array $props): bool {
@@ -186,14 +227,13 @@ abstract class RemoteMediaTask {
      * are added to the remaining file.
      */
     protected function relocate(string $path, array $props, int $timestamp): void {
-        $fileid = (string) ($props['{http://owncloud.org/ns}fileid'] ?? '');
         $duplicate = $this->findDuplicate($path, $props);
         if ($duplicate !== null) {
             $this->log('[' . $this->relative($path) . '] - Identical to "' . $this->relative($duplicate) . '"');
             $this->stats['duplicates']++;
             if ($this->delete_duplicates) {
                 $remaining = $this->target_by_size[(int) $props['{DAV:}getcontentlength']][$duplicate]['props'];
-                foreach ($this->albumsContaining($fileid) as $album) {
+                foreach ($this->albumsOf($path, $props) as $album) {
                     $this->addToAlbum($album, $duplicate, $remaining);
                 }
                 $this->log('[' . $this->relative($path) . '] - Deleting duplicate');
@@ -223,7 +263,7 @@ abstract class RemoteMediaTask {
             $this->log('[' . $this->relative($path) . '] - Moved to "' . $this->relative($destination) . '"');
         } else {
             // a copy makes Nextcloud Photos calculate its date again, a move does not
-            $albums = $this->albumsContaining($fileid);
+            $albums = $this->albumsOf($path, $props);
             $destination = $this->move($path, $directory, 'COPY');
             $this->logRename($path, $props, $destination);
             $this->log('[' . $this->relative($path) . '] - Copied to "' . $this->relative($destination) . '" (to update the date in Nextcloud Photos)');
@@ -455,23 +495,17 @@ abstract class RemoteMediaTask {
             return;
         }
         $size = (int) ($props['{DAV:}getcontentlength'] ?? 0);
-        foreach ($this->target_by_size as $existing_size => $entries) {
-            if (isset($entries[$taken])) {
-                $this->log('[' . $this->relative($path) . '] - "' . $this->relative($taken) . '" is a different file ('
-                        . ($existing_size === $size ? 'same size, different content' : 'size ' . $size . ' vs ' . $existing_size . ' bytes') . ')');
-                return;
-            }
+        if (isset($this->indexed_paths[$taken])) {
+            $existing_size = $this->indexed_paths[$taken];
+            $this->log('[' . $this->relative($path) . '] - "' . $this->relative($taken) . '" is a different file ('
+                    . ($existing_size === $size ? 'same size, different content' : 'size ' . $size . ' vs ' . $existing_size . ' bytes') . ')');
+            return;
         }
         $this->log('[' . $this->relative($path) . '] - "' . $this->relative($taken) . '" already exists');
     }
 
     protected function isIndexed(string $path): bool {
-        foreach ($this->target_by_size as $entries) {
-            if (isset($entries[$path])) {
-                return true;
-            }
-        }
-        return false;
+        return isset($this->indexed_paths[$path]);
     }
 
     /**
@@ -481,7 +515,7 @@ abstract class RemoteMediaTask {
     protected function repairDate(string $path, array $props, int $timestamp): void {
         $this->log('[' . $this->relative($path) . '] - Repairing date to ' . gmdate('Y-m-d H:i:s', $timestamp));
         $fileid = (string) ($props['{http://owncloud.org/ns}fileid'] ?? '');
-        $albums = $this->albumsContaining($fileid);
+        $albums = $this->albumsOf($path, $props);
         $this->setDates($path, $timestamp);
         $this->stats['dates_repaired']++;
         if ($this->dry_run) {
