@@ -26,6 +26,7 @@ namespace Rikmeijer\Googlephotos2nextcloud;
 class RemoteRepairTask extends RemoteMediaTask {
 
     const JOBS = ['reorganize', 'filename-dates', 'folder-albums'];
+    const SIMILAR_SIZE_TOLERANCE = 0.05; // files of the same photo within 5% of the largest count as equally good
 
     public function __construct(
             \Sabre\DAV\Client $client,
@@ -176,17 +177,27 @@ class RemoteRepairTask extends RemoteMediaTask {
             }
             uasort($files, fn(array $a, array $b) => (int) $b['{DAV:}getcontentlength'] <=> (int) $a['{DAV:}getcontentlength']);
             while (count($files) > 1) {
-                $kept = array_key_first($files);
-                $kept_props = array_shift($files);
-                $kept_time = self::takenTimestamp($kept, $kept_props);
+                $largest = array_key_first($files);
+                $same = [$largest => array_shift($files)];
+                $largest_time = self::takenTimestamp($largest, $same[$largest]);
                 foreach ($files as $path => $props) {
                     $time = self::takenTimestamp($path, $props);
-                    if ($kept_time === null || $time === null || abs($kept_time - $time) > self::DATE_TOLERANCE) {
+                    if ($largest_time !== null && $time !== null && abs($largest_time - $time) <= self::DATE_TOLERANCE) {
+                        $same[$path] = $props;
+                        unset($files[$path]);
+                    }
+                }
+                if (count($same) < 2) {
+                    continue;
+                }
+
+                $kept = $this->chooseKept($same);
+                foreach ($same as $path => $props) {
+                    if ($path === $kept) {
                         continue;
                     }
-                    unset($files[$path]);
                     try {
-                        $this->deleteSimilar($path, $props, $kept, $kept_props);
+                        $this->deleteSimilar($path, $props, $kept, $same[$kept]);
                     } catch (\Exception $e) {
                         $this->stats['errors']++;
                         $this->log('[' . $this->relative($path) . '] - Failed: ' . $e->getMessage());
@@ -194,6 +205,31 @@ class RemoteRepairTask extends RemoteMediaTask {
                 }
             }
         }
+    }
+
+    /**
+     * The file to keep of the same photo: the largest, unless a file of almost the same size is already in the
+     * year/month directory of its date, which saves moving the largest there.
+     *
+     * @param array<string, array> $same path => properties, largest first
+     */
+    private function chooseKept(array $same): string {
+        $largest = array_key_first($same);
+        $minimum_size = (int) $same[$largest]['{DAV:}getcontentlength'] * (1 - self::SIMILAR_SIZE_TOLERANCE);
+        foreach ($same as $path => $props) {
+            if ((int) $props['{DAV:}getcontentlength'] < $minimum_size) {
+                break;
+            }
+            $time = self::takenTimestamp($path, $props);
+            if ($time !== null && dirname($path) === $this->directoryFor($time)) {
+                if ($path !== $largest) {
+                    $this->log('[' . $this->relative($path) . '] - Keeping this file instead of the slightly larger "'
+                            . $this->relative($largest) . '", because it is already in its year/month directory');
+                }
+                return $path;
+            }
+        }
+        return $largest;
     }
 
     private function deleteSimilar(string $path, array $props, string $kept, array $kept_props): void {
@@ -207,7 +243,7 @@ class RemoteRepairTask extends RemoteMediaTask {
         foreach ($this->albumsOf($path, $props) as $album) {
             $this->addToAlbum($album, $kept, $kept_props);
         }
-        $this->log('[' . $this->relative($path) . '] - Deleting the smaller file');
+        $this->log('[' . $this->relative($path) . '] - Deleting this copy');
         $this->delete($path);
         $this->unindex($path, $props);
     }
