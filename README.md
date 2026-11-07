@@ -103,7 +103,8 @@ argument (`php gp2nc.php <name>`); `DRY_RUN`, `--dry-run` and `DELETE_DUPLICATES
   are deleted; a file that only shares its name with a different file gets a `(n)` name, and the log says why.
   With `SIMILAR_DUPLICATES=true`, files with the same name (ignoring `(n)` and case) that were taken within a day
   of each other are first treated as the same photo, e.g. an original and a recompressed copy from Google: the
-  largest file is kept, the albums of the others (including album directories) are added to it, and the others
+  largest file is kept (or, to save moves, a file within 5% of its size that is already in its `<year>/<month>`
+  directory), the albums of the others (including album directories) are added to it, and the others
   are deleted.
 - `folder-albums`: only adds the files in album directories (see below) to their album, without moving anything.
 

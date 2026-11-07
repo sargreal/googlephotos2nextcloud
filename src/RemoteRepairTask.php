@@ -19,7 +19,8 @@ namespace Rikmeijer\Googlephotos2nextcloud;
  * Files are moved with their albums and identical files are deleted, like the takeout import does.
  *
  * With similar duplicates enabled, reorganize first treats files with the same name (ignoring "(n)") and a taken
- * time within a day as the same photo, e.g. an original and a recompressed copy: it keeps the largest file, adds
+ * time within a day as the same photo, e.g. an original and a recompressed copy: it keeps the largest file (or one
+ * within 5% of its size that is already in its year/month directory, to save moves), adds
  * the albums of the others to it and deletes them. At the end, files with the same name that remain in one
  * directory are reported, to be checked manually.
  */
